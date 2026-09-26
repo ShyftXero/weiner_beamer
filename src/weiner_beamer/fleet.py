@@ -421,7 +421,20 @@ class Fleet:
         if which not in ("a", "b"):
             raise FleetError("end must be a or b")
         m = self.machine(mid)
-        pos = self.ctl[mid].wpos[:2]
+        c = self.ctl[mid]
+        # Read the position only once motion has stopped, or a jog still in
+        # flight gets recorded as the dog's end.
+        if m["firmware"] == "marlin":
+            self.command(mid, ["M400", "M114"])
+        else:
+            t0 = time.monotonic()
+            time.sleep(0.3)  # let a just-sent jog show up in the status report
+            while c.state != "Idle":
+                if time.monotonic() - t0 > 15:
+                    raise FleetError(f"machine is {c.state}; wait for it to stop, then mark again")
+                time.sleep(0.1)
+            time.sleep(0.3)  # one more status report at rest
+        pos = c.wpos[:2]
         m["align"][f"end_{which}"] = [round(v, 3) for v in pos]
         self.store.save_machine(m)
         self.ctl[mid].machine = m

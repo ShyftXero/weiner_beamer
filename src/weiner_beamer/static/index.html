@@ -1,1 +1,110 @@
-<!doctype html><title>WeinerBeamer</title>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WeinerBeamer</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌭</text></svg>">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">🌭 <b>Weiner</b>Beamer</div>
+  <nav class="tabs" role="tablist">
+    <button data-view="queue" class="on">Queue</button>
+    <button data-view="machines">Machines &amp; alignment</button>
+    <button data-view="settings">Settings</button>
+    <button data-view="history">History</button>
+  </nav>
+  <button id="estop-all" class="estop" title="Stop every machine now (Esc twice)">E-STOP ALL</button>
+</header>
+
+<main>
+  <!-- QUEUE ------------------------------------------------------------ -->
+  <section id="view-queue" class="view on">
+    <div class="cols">
+      <div class="panel composer">
+        <div class="panel-head">
+          <h2 id="composer-title">New dog</h2>
+          <button id="cancel-edit" class="ghost hidden">Cancel edit</button>
+        </div>
+        <div class="seg" id="kind-seg">
+          <button data-kind="text" class="on">Text</button>
+          <button data-kind="pattern">Pattern</button>
+          <button data-kind="image">Image</button>
+          <button data-kind="testgrid">Test grid</button>
+        </div>
+        <form id="job-form" autocomplete="off" onsubmit="return false">
+          <div class="grid2">
+            <label>Title / order<input name="title" maxlength="80" placeholder="e.g. Bob #14"></label>
+            <label>Customer<input name="customer" maxlength="80" placeholder="optional"></label>
+          </div>
+          <div id="kind-fields"></div>
+          <details class="more">
+            <summary>Routing &amp; repeats</summary>
+            <div class="grid2">
+              <label>Machine<select name="machine_id"></select></label>
+              <label>Dog type<select name="dog_type"></select></label>
+              <label>Copies<input name="copies" type="number" min="1" max="50" value="1"></label>
+              <label>Passes<input name="passes" type="number" min="1" max="10" value="1"></label>
+            </div>
+            <label class="check"><input type="checkbox" name="hold"> Add as held (won't run until released)</label>
+          </details>
+        </form>
+        <div class="viz-wrap">
+          <div id="preview" class="viz"></div>
+          <div id="preview-info" class="viz-info"></div>
+        </div>
+        <div class="actions">
+          <button id="add-job" class="primary">Add to queue</button>
+        </div>
+      </div>
+
+      <div class="stack">
+        <div id="machine-strip" class="strip"></div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Queue</h2>
+            <label class="check small"><input type="checkbox" id="show-finished" checked> show finished</label>
+          </div>
+          <div id="queue"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- MACHINES ------------------------------------------------------------ -->
+  <section id="view-machines" class="view">
+    <div class="seg" id="machine-seg"></div>
+    <div id="machine-detail"></div>
+  </section>
+
+  <!-- SETTINGS ------------------------------------------------------------ -->
+  <section id="view-settings" class="view">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Machines</h2>
+        <button id="add-machine">Add machine</button>
+      </div>
+      <p class="muted">Ports: <code>/dev/ttyUSB0</code>, <code>COM3</code>, <code>socket://192.168.1.50:23</code> (WiFi boards),
+        or <code>sim</code> / <code>sim:&lt;speedup&gt;</code> for a simulated controller.</p>
+      <div id="machine-editor"></div>
+    </div>
+  </section>
+
+  <!-- HISTORY ------------------------------------------------------------- -->
+  <section id="view-history" class="view">
+    <div class="panel">
+      <div class="panel-head"><h2>Run history</h2></div>
+      <div id="history"></div>
+    </div>
+  </section>
+</main>
+
+<dialog id="modal"><div id="modal-body"></div></dialog>
+<div id="toasts" aria-live="polite"></div>
+
+<script src="/static/viz.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

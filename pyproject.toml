@@ -1,7 +1,7 @@
 [project]
 name = "weiner-beamer"
 version = "0.1.0"
-description = "Add your description here"
+description = "Laser-engraved hotdog queue for Grbl and Marlin laser machines"
 readme = "README.md"
 authors = [
     { name = "Eli McRae", email = "shyft@shyft.us" }

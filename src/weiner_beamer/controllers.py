@@ -507,6 +507,7 @@ class MarlinController(Controller):
             self.command(["M154 S1"], timeout=5)  # position auto-report if compiled in
         except LinkError:
             pass
+        self.state = "Idle"
 
     def _poller(self):
         while self.connected:

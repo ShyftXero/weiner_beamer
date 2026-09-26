@@ -182,3 +182,20 @@ def test_restart_marks_running_jobs_interrupted(tmp_path):
     s2 = Store(tmp_path / "x.db")
     assert s2.job(jid)["status"] == "interrupted"
     assert s2.runs(jid)[0]["result"] == "interrupted"
+
+
+def test_template_burn_and_manual_machine(client):
+    mid = "genmitsu-3018"
+    client.post(f"/api/machines/{mid}/template").raise_for_status()
+    wait_idle(client, mid)
+    assert len(client.app.state.fleet.ctl[mid].transport.burns) > 3 * 20  # 3 slot outlines
+    # a manual (export-only) machine: run -> download -> operator marks done
+    m = client.post("/api/machines", json={"name": "Lightburn box", "firmware": "manual"}).json()
+    jid = add(client, "Export me", machine_id=m["id"])[0]
+    client.post(f"/api/machines/{m['id']}/run", json={}).raise_for_status()
+    assert job(client, jid)["status"] == "running"
+    g = client.get(f"/api/jobs/{jid}/gcode", params={"machine": m["id"]})
+    assert g.status_code == 200 and "M4 S0" in g.text
+    client.post(f"/api/jobs/{jid}/action", json={"action": "mark_done"}).raise_for_status()
+    assert job(client, jid)["status"] == "done"
+    assert machine(client, m["id"])["activity"] is None
