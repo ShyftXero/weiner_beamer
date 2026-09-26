@@ -93,6 +93,8 @@ class Controller:
         self._want_connected = False
         self._last_rx = time.monotonic()
         self.info: dict = {}
+        self.feed_ov = 100  # live feed override %, relative to the speed baked into the job
+        self._inject: collections.deque[str] = collections.deque()  # lines to slip into a running stream
 
     # ---- lifecycle -------------------------------------------------------
     @property
@@ -213,6 +215,7 @@ class Controller:
             "progress": list(self.progress),
             "last_error": self.last_error,
             "info": self.info,
+            "feed_override": self.feed_ov,
         }
 
     # ---- commands -------------------------------------------------------------
@@ -257,6 +260,8 @@ class Controller:
                 if not self.connected:
                     res.error = "link lost"
                     break
+                while self._inject:
+                    sent.append(self._send(self._inject.popleft(), -1))
                 sent.append(self._send(ln.text, i))
                 self._harvest(sent, lines, res, on_line)
                 if res.error:
@@ -290,6 +295,10 @@ class Controller:
     def _harvest(self, sent, lines, res, on_line):
         while sent and sent[0].event.is_set():
             p = sent.pop(0)
+            if p.idx < 0:  # injected (e.g. M220): never fails the job
+                if p.reply.lower().startswith("error"):
+                    self._log(f"! {p.text}: {p.reply}")
+                continue
             if p.reply.lower().startswith(("error", "alarm", "!!")):
                 res.error = f"line {p.idx + 1} `{p.text}`: {p.reply}"
                 return
@@ -317,6 +326,9 @@ class Controller:
     def _wait_idle(self, stall: float) -> str | None:
         return None
     def _safe_stop(self, res: StreamResult): ...
+    def feed_override(self, pct: int):
+        """Scale the feed of everything still to run by pct% (live speed dial)."""
+        raise LinkError("this machine has no live feed override")
     def pause(self): self.paused = True
     def resume(self): self.paused = False
     def abort(self): self._abort = True; self.paused = False
@@ -371,6 +383,11 @@ class GrblController(Controller):
                 self.wpos = [mp[i] - self.wco[i] for i in range(3)]
             elif "WPos" in fields:
                 self.wpos = [float(v) for v in fields["WPos"].split(",")[:3]]
+            if "Ov" in fields:
+                try:
+                    self.feed_ov = int(fields["Ov"].split(",")[0])
+                except ValueError:
+                    pass
             return
         if line == "ok" or line.startswith("error"):
             with self.lock:
@@ -394,6 +411,7 @@ class GrblController(Controller):
             return
         if line.startswith("Grbl"):
             self.info["firmware"] = line
+            self.feed_ov = 100  # a reset clears overrides
             with self.lock:
                 for p in self.pending:
                     p.reply = "error:controller reset"
@@ -470,6 +488,16 @@ class GrblController(Controller):
             self._write(b"\x18")
         except LinkError:
             pass
+
+    def feed_override(self, pct):
+        """Grbl realtime feed override: reset to 100%, then step by 10s and 1s.
+        Takes effect immediately, including on moves already in the planner."""
+        pct = max(10, min(200, int(round(pct))))
+        delta = pct - 100
+        tens, ones = int(delta / 10), delta - int(delta / 10) * 10
+        seq = b"\x90" + (b"\x91" if tens > 0 else b"\x92") * abs(tens) + (b"\x93" if ones > 0 else b"\x94") * abs(ones)
+        self._write(seq)
+        self.feed_ov = pct
 
     def jog_cancel(self):
         try:
@@ -570,6 +598,7 @@ class MarlinController(Controller):
             return
         if low.startswith("start"):
             self._started.set()
+            self.feed_ov = 100
             with self.lock:
                 for p in self.pending:
                     p.reply = "error:controller reset"
@@ -669,6 +698,17 @@ class MarlinController(Controller):
     def abort(self):
         self._abort = True
         self.paused = False
+
+    def feed_override(self, pct):
+        """M220 is queued like any command: while streaming it is slipped in
+        ahead of the next line and applies once the few moves already in
+        Marlin's buffer have run."""
+        pct = max(10, min(999, int(round(pct))))
+        if self.streaming:
+            self._inject.append(f"M220 S{pct}")
+        else:
+            self.command([f"M220 S{pct}"], timeout=10)
+        self.feed_ov = pct
 
     def estop(self):
         self._abort = True

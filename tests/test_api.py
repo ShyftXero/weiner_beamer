@@ -199,3 +199,61 @@ def test_template_burn_and_manual_machine(client):
     client.post(f"/api/jobs/{jid}/action", json={"action": "mark_done"}).raise_for_status()
     assert job(client, jid)["status"] == "done"
     assert machine(client, m["id"])["activity"] is None
+
+
+def _feeds(gcode: str) -> set[int]:
+    return {int(w[1:]) for line in gcode.splitlines() for w in line.split() if w.startswith("F")}
+
+
+def test_speed_dial_bakes_into_gcode_and_clamps(client):
+    mid = "genmitsu-3018"
+    jid = add(client, "Dial")[0]
+    base = _feeds(client.get(f"/api/jobs/{jid}/gcode", params={"machine": mid}).text)
+    assert base == {800, 1200}  # outline + fill design speeds
+    r = client.post(f"/api/machines/{mid}/speed", json={"step": -10}).json()
+    assert r["step"] == -10 and r["factor"] == pytest.approx(1.06 ** -10, rel=1e-3)
+    slow = client.get(f"/api/jobs/{jid}/gcode", params={"machine": mid}).text
+    assert _feeds(slow) == {round(800 * 1.06 ** -10), round(1200 * 1.06 ** -10)}
+    assert "speed dial -10" in slow
+    assert client.post(f"/api/machines/{mid}/speed", json={"step": 99}).json()["step"] == 10
+    assert machine(client, mid)["config"]["speed"]["step"] == 10  # persisted on the machine
+
+
+def test_speed_dial_run_is_slower_and_recorded(client):
+    mid = "genmitsu-3018"
+    client.post(f"/api/machines/{mid}/speed", json={"step": -3}).raise_for_status()
+    jid = add(client, "Dark")[0]
+    client.post(f"/api/machines/{mid}/run", json={"job_ids": [jid]}).raise_for_status()
+    wait_idle(client, mid)
+    burns = client.app.state.fleet.ctl[mid].transport.burns
+    assert max(b[3] for b in burns) == pytest.approx(1200 * 1.06 ** -3, rel=0.01)
+    run = job(client, jid)["run_history"][0]
+    assert run["speed_step"] == -3 and run["speed_factor"] == pytest.approx(1.06 ** -3)
+
+
+@pytest.mark.parametrize("mid", ["genmitsu-3018", "ender-laser"])
+def test_speed_dial_live_during_burn(client, mid):
+    client.post("/api/machines", json={"id": mid, "port": "sim:4"}).raise_for_status()
+    wait_ready(client, mid)
+    jid = add(client, "Live tune")[0]
+    client.post(f"/api/machines/{mid}/run", json={"job_ids": [jid]}).raise_for_status()
+    t0 = time.time()
+    while (machine(client, mid)["activity"] or {}).get("op_done", -1) < 2:
+        assert time.time() - t0 < 30
+        time.sleep(0.05)
+    r = client.post(f"/api/machines/{mid}/speed", json={"step": 5}).json()
+    want = round(1.06 ** 5 * 100)
+    assert r["live"] == want
+    sim = client.app.state.fleet.ctl[mid].transport
+    t0 = time.time()
+    while sim.feed_ov != want:  # Marlin's M220 waits behind the lines already in flight
+        assert time.time() - t0 < 10
+        time.sleep(0.05)
+    client.post("/api/machines", json={"id": mid, "port": "sim:400"})  # refused while busy; fine
+    wait_idle(client, mid, timeout=90)
+    assert job(client, jid)["status"] == "done"
+    assert job(client, jid)["run_history"][0]["speed_step"] == 5
+    t0 = time.time()
+    while sim.feed_ov != 100:  # override dropped once the job ends
+        assert time.time() - t0 < 5
+        time.sleep(0.05)

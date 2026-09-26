@@ -83,7 +83,23 @@ def sanitize_machine(cfg: dict) -> dict:
     mk["checksums"] = bool(mk["checksums"])
     mk["inflight"] = int(_num(mk["inflight"], 1, 8, 2))
     m["align"]["angle"] = _num(m["align"].get("angle"), -45, 45, 0)
+    sp = m["speed"]
+    sp["step"] = int(round(_num(sp.get("step"), -10, 10, 0)))
+    sp["step_pct"] = _num(sp.get("step_pct"), 1, 25, 6)
     return m
+
+
+def speed_factor(m: dict, step: int | None = None) -> float:
+    """Multiplier the darkness dial applies to every design speed."""
+    sp = m["speed"]
+    step = sp["step"] if step is None else step
+    return (1 + sp["step_pct"] / 100) ** step
+
+
+def scale_speed(ops: list[dict], factor: float) -> list[dict]:
+    if factor == 1:
+        return ops
+    return [{**o, "feed": o["feed"] * factor} for o in ops]
 
 
 class Fleet:
@@ -326,14 +342,17 @@ class Fleet:
             return True  # a bad design shouldn't stop the other dogs
         n_total = len(ops) * max(1, j["passes"])
         start_op = j["last_op"] + 1 if resume and 0 <= j["last_op"] < n_total - 1 else 0
+        step, factor = m["speed"]["step"], speed_factor(m)
+        ops = scale_speed(ops, factor)  # the darkness dial, baked in at start
         lines = dialect_for(m).job(ops, m, designs.slot_offset(m, slot), j["passes"], start_op)
         stats = geometry.path_stats(ops)
         est = stats["est_seconds"] * max(1, j["passes"]) * (1 - start_op / max(n_total, 1))
-        rid = self.store.start_run(jid, mid, slot, "resume" if start_op else "run", start_op, n_total)
+        rid = self.store.start_run(jid, mid, slot, "resume" if start_op else "run", start_op, n_total, step, factor)
         self.store.update_job(jid, runs=j["runs"] + 1, last_op=start_op - 1)
         act = self.activity[mid]
         act.update({"job_id": jid, "slot": slot, "run_id": rid, "start_op": start_op, "total_ops": n_total,
-                    "op_done": start_op - 1, "job_started": time.time(), "est_seconds": est, "title": j["title"]})
+                    "op_done": start_op - 1, "job_started": time.time(), "est_seconds": est, "title": j["title"],
+                    "speed_step": step, "speed_factor": factor, "speed_step_now": step})
         last_flush = [0.0]
 
         def on_line(idx, line):
@@ -347,15 +366,22 @@ class Fleet:
 
         res = c.stream(lines, on_line)
         last_op = act["op_done"]
+        moved = act["speed_step_now"] if act["speed_step_now"] != step else None
+        if c.feed_ov != 100:
+            # The next job bakes the dial's new value in, so drop the live override.
+            try:
+                c.feed_override(100)
+            except LinkError:
+                pass
         if res.ok:
-            self.store.end_run(rid, "done", None, n_total - 1)
+            self.store.end_run(rid, "done", None, n_total - 1, moved)
             self.store.update_job(jid, status="done", last_op=n_total - 1, error=None)
             return True
         if res.canceled:
-            self.store.end_run(rid, "aborted", "aborted by operator", last_op)
+            self.store.end_run(rid, "aborted", "aborted by operator", last_op, moved)
             self.store.update_job(jid, status="interrupted", last_op=last_op, error="aborted by operator")
         else:
-            self.store.end_run(rid, "failed", res.error, last_op)
+            self.store.end_run(rid, "failed", res.error, last_op, moved)
             self.store.update_job(jid, status="interrupted", last_op=last_op, error=res.error)
         return False
 
@@ -467,6 +493,29 @@ class Fleet:
         self.ctl[mid].machine = m
         return m["align"]
 
+    def set_speed(self, mid: str, step) -> dict:
+        """Turn the darkness dial.  Saved on the machine for every later job;
+        if a job is burning right now it also changes speed immediately via the
+        firmware's feed override (relative to the speed that job started with)."""
+        m = self.machine(mid)
+        m["speed"]["step"] = int(round(_num(step, -10, 10, 0)))
+        self.store.save_machine(m)
+        c = self.ctl[mid]
+        c.machine = m
+        out = {"step": m["speed"]["step"], "factor": round(speed_factor(m), 4), "live": None}
+        act = self.activity.get(mid)
+        if act and act.get("kind") == "batch" and "speed_factor" in act and not act.get("manual"):
+            want = round(speed_factor(m) / act["speed_factor"] * 100)
+            try:
+                c.feed_override(want)
+            except LinkError as e:
+                raise FleetError(f"saved, but the live change failed: {e}") from e
+            act["speed_step_now"] = m["speed"]["step"]
+            out["live"] = c.feed_ov
+            if c.feed_ov != want:
+                out["note"] = f"firmware limits the live override to {c.feed_ov}%; the full change applies from the next job"
+        return out
+
     def set_angle(self, mid: str, angle: float):
         m = self.machine(mid)
         m["align"]["angle"] = _num(angle, -45, 45, 0)
@@ -487,6 +536,7 @@ class Fleet:
         act.pop("runs", None)
         queued = [j["id"] for j in self.store.jobs(include_finished=False) if self.eligible(j, m)]
         return {"config": m, "status": snap, "activity": act or None, "next_jobs": queued[: m["jig"]["slots"]],
+                "speed_factor": round(speed_factor(m), 4),
                 "queued_count": len(queued), "safe_zone": geometry.safe_zone(m["dog"]),
                 "log": list(c.log)[-60:] if c else []}
 

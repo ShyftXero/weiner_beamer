@@ -34,6 +34,7 @@ class SimTransport:
         self.wco = [0.0, 0.0, 0.0]  # work = machine - wco
         self.absolute = True
         self.feed = 1000.0
+        self.feed_ov = 100  # % feed override (Grbl realtime 0x90-0x94, Marlin M220)
         self.s = 0.0
         self.laser_on = False  # M3/M4 (grbl) or inline mode (marlin)
         self.fan = 0.0
@@ -54,7 +55,7 @@ class SimTransport:
             raise OSError("closed")
         for b in data:
             ch = bytes([b])
-            if self.fw == "grbl" and ch in (b"?", b"!", b"~", b"\x18", b"\x85"):
+            if self.fw == "grbl" and (ch in (b"?", b"!", b"~", b"\x18", b"\x85") or 0x90 <= b <= 0x94):
                 self._realtime(ch)
                 continue
             self.inbuf += ch
@@ -93,7 +94,7 @@ class SimTransport:
             wp = self.mpos
             st = "Alarm" if self.alarm else ("Hold:0" if self.hold else self.state)
             self._say(f"<{st}|MPos:{wp[0]:.3f},{wp[1]:.3f},{wp[2]:.3f}|FS:{int(self.feed)},{int(self.s)}"
-                      f"|WCO:{self.wco[0]:.3f},{self.wco[1]:.3f},{self.wco[2]:.3f}>")
+                      f"|WCO:{self.wco[0]:.3f},{self.wco[1]:.3f},{self.wco[2]:.3f}|Ov:{self.feed_ov},100,100>")
         elif ch == b"!":
             self.hold = True
         elif ch == b"~":
@@ -106,6 +107,7 @@ class SimTransport:
                 self.laser_on = False
                 self.s = 0
                 self.hold = False
+                self.feed_ov = 100
                 self.inbuf = b""
                 while not self.lines.empty():
                     self.lines.get_nowait()
@@ -114,6 +116,9 @@ class SimTransport:
             self._boot()
             if moving:
                 self._say("ALARM:3")
+        elif ch in (b"\x90", b"\x91", b"\x92", b"\x93", b"\x94"):
+            step = {b"\x90": None, b"\x91": 10, b"\x92": -10, b"\x93": 1, b"\x94": -1}[ch]
+            self.feed_ov = 100 if step is None else max(10, min(200, self.feed_ov + step))
         elif ch == b"\x85":
             with self.lock:
                 self.planner = [m for m in self.planner if not m.get("jog")]
@@ -132,16 +137,19 @@ class SimTransport:
             start = list(self.mpos)
             tgt = m["to"]
             dist = math.dist(start, tgt)
-            dur = dist / max(m["feed"], 1) * 60 / self.speedup
-            t0 = time.monotonic()
+            dur = dist / max(m["feed"], 1) * 60 / self.speedup  # at 100% override
+            ov_start = 100 if m.get("rapid") or m.get("jog") else self.feed_ov
+            k, last = 0.0, time.monotonic()
             while True:
                 if self.gen != gen or self.closed:
                     break
+                now = time.monotonic()
+                dt, last = now - last, now
                 if self.hold:
                     time.sleep(0.01)
-                    t0 += 0.01
                     continue
-                k = 1.0 if dur <= 0 else min((time.monotonic() - t0) / dur, 1.0)
+                ov = 100 if m.get("rapid") or m.get("jog") else self.feed_ov  # override applies mid-move
+                k = 1.0 if dur <= 0 else min(k + dt / dur * ov / 100, 1.0)
                 self.mpos = [start[i] + (tgt[i] - start[i]) * k for i in range(3)]
                 if k >= 1.0:
                     break
@@ -150,7 +158,7 @@ class SimTransport:
                 if self.gen != gen:
                     continue
                 if m.get("burn") and dist > 0:
-                    self.burns.append((tuple(start), tuple(tgt), m["burn"]))
+                    self.burns.append((tuple(start), tuple(tgt), m["burn"], m["feed"] * ov_start / 100))
                 if self.planner and self.planner[0] is m:
                     self.planner.pop(0)
 
@@ -267,6 +275,10 @@ class SimTransport:
                 self.gen += 1
             self._say("Error:Printer halted. kill() called!")
             return
+        elif code == "M220":
+            v = dict(WORD.findall(u))
+            if "S" in v:
+                self.feed_ov = max(10, min(999, int(float(v["S"]))))
         elif code == "M999":
             self.halted = False
         elif code == "G28":
@@ -343,4 +355,4 @@ class SimTransport:
                 burn = self.fan
         self._wait_room()
         with self.lock:
-            self.planner.append({"to": tgt, "feed": feed, "burn": burn, "jog": jog})
+            self.planner.append({"to": tgt, "feed": feed, "burn": burn, "jog": jog, "rapid": rapid})

@@ -118,6 +118,22 @@ details.more summary { cursor: pointer; color: var(--muted); font-size: 13px; ma
 .progress > div { height: 100%; background: linear-gradient(90deg, var(--accent), var(--done)); transition: width .4s linear; }
 .err { color: var(--danger); font-size: 12px; overflow-wrap: anywhere; }
 
+/* speed / darkness dial */
+.speed { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+.speed .sp-head { gap: 8px; font-size: 14px; }
+.speed .sp-lbl { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+.speed .sp-val b { font-size: 16px; font-variant-numeric: tabular-nums; }
+.speed .sp-ctl { display: flex; align-items: center; gap: 8px; }
+.speed .sp-track { flex: 1; min-width: 90px; display: flex; flex-direction: column; }
+.speed .sp-track input { width: 100%; accent-color: var(--accent); }
+.speed .sp-scale { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); white-space: nowrap; gap: 4px; }
+.speed { container-type: inline-size; }
+@container (max-width: 420px) {
+  .speed .sp-ctl { flex-wrap: wrap; justify-content: space-between; }
+  .speed .sp-track { order: -1; flex: 1 1 100%; }
+  .speed .sp-scale { font-size: 11px; }
+}
+
 /* queue table */
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 6px; border-bottom: 1px solid var(--line); }

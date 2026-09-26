@@ -42,7 +42,7 @@ const FIELDS = {
     { k: "mode", l: "Style", t: "select", opts: () => MODES, d: "both" },
     { k: "size_mm", l: "Letter height mm (0 = fit dog)", t: "num", d: 0, step: 0.5 },
     { k: "power", l: "Power %", t: "pct", d: 60 },
-    { k: "feed", l: "Speed mm/min", t: "num", d: 800, step: 50 },
+    { k: "feed", l: "Base speed mm/min", t: "num", d: 800, step: 50 },
     { k: "border", l: "Border", t: "bool" },
     { k: "rotate_180", l: "Rotate 180°", t: "bool" },
     { k: "fill_power", l: "Fill power %", t: "pct", d: 60, adv: true },
@@ -62,7 +62,7 @@ const FIELDS = {
     { k: "bar_width", l: "Bar width mm", t: "num", d: 1.6, step: 0.1, pat: ["grill"] },
     { k: "double", l: "Double line", t: "bool", d: true, pat: ["border"] },
     { k: "power", l: "Power %", t: "pct", d: 60 },
-    { k: "feed", l: "Speed mm/min", t: "num", d: 900, step: 50 },
+    { k: "feed", l: "Base speed mm/min", t: "num", d: 900, step: 50 },
     { k: "width_mm", l: "Width mm (0 = fit)", t: "num", d: 0, adv: true },
     { k: "height_mm", l: "Height mm (0 = fit)", t: "num", d: 0, adv: true },
     { k: "hatch_spacing", l: "Checker fill spacing", t: "num", d: 0.3, step: 0.05, adv: true, pat: ["checker"] },
@@ -72,7 +72,7 @@ const FIELDS = {
     { k: "width_mm", l: "Width mm (0 = fit)", t: "num", d: 0 },
     { k: "line_interval", l: "Line interval mm", t: "num", d: 0.2, step: 0.05 },
     { k: "power", l: "Power %", t: "pct", d: 50 },
-    { k: "feed", l: "Speed mm/min", t: "num", d: 1500, step: 50 },
+    { k: "feed", l: "Base speed mm/min", t: "num", d: 1500, step: 50 },
     { k: "dither", l: "Dither (photos)", t: "bool" },
     { k: "invert", l: "Invert", t: "bool" },
     { k: "threshold", l: "Threshold (0-255)", t: "num", d: 128, adv: true },
@@ -322,12 +322,74 @@ function progressHTML(m) {
     <div class="row sub"><span>${pct}%</span><span>stroke ${Math.max(0, a.op_done + 1)} / ${a.total_ops}</span><span>ETA ${fmtTime(a.eta)}</span><span>elapsed ${fmtTime(a.elapsed)}</span></div>`;
 }
 
+// ---- darkness / speed dial ----------------------------------------------------
+const speedFactor = (m, step) => Math.pow(1 + m.config.speed.step_pct / 100, step ?? m.config.speed.step);
+function speedText(m, step) {
+  step = step ?? m.config.speed.step;
+  const f = speedFactor(m, step);
+  const sign = step > 0 ? "+" : "";
+  const how = step === 0 ? "base speed" : step < 0 ? "slower · darker" : "faster · lighter";
+  return `<b>${sign}${step}</b> <span class="muted">×${f.toFixed(2)} · ${how}</span>`;
+}
+function speedHTML(m) {
+  const st = m.config.speed.step;
+  const ov = m.status?.feed_override;
+  const live = m.activity?.kind === "batch" && ov && ov !== 100 ? `<span class="pill warn" title="live feed override on the job burning now">live ${ov}%</span>` : "";
+  return `<div class="speed" data-mid="${esc(m.config.id)}">
+    <div class="row sp-head"><span class="sp-lbl">Speed</span><span class="sp-val">${speedText(m)}</span>${live}</div>
+    <div class="sp-ctl">
+      <button class="icon" data-sp="-1" title="Slower = darker" ${st <= -10 ? "disabled" : ""}>− slower</button>
+      <div class="sp-track">
+        <input type="range" min="-10" max="10" step="1" value="${st}" aria-label="Speed dial, -10 slowest to +10 fastest">
+        <div class="sp-scale"><span>−10 darker</span><span>0</span><span>lighter +10</span></div>
+      </div>
+      <button class="icon" data-sp="1" title="Faster = lighter" ${st >= 10 ? "disabled" : ""}>faster +</button>
+    </div>
+  </div>`;
+}
+const setSpeed = guard(async (mid, step) => {
+  step = Math.max(-10, Math.min(10, Math.round(step)));
+  const r = await api(`/api/machines/${mid}/speed`, { json: { step } });
+  if (r.note) toast(r.note);
+  else if (r.live) toast(`Speed ${step > 0 ? "+" : ""}${step} - applied to the burn in progress (${r.live}%)`);
+  App.lastStripSig = "";
+  await poll();
+  const m = machineById(mid);
+  if (m && $("#modal").open) refreshSpeed($("#modal-body"), m);
+});
+el_on(document, "input", ".speed input[type=range]", (el) => {
+  const m = machineById(el.closest(".speed").dataset.mid);
+  if (m) el.closest(".speed").querySelector(".sp-val").innerHTML = speedText(m, +el.value);
+});
+// Debounced so a burst of arrow-key taps sends one change, not one per tap.
+let speedTimer = null;
+el_on(document, "change", ".speed input[type=range]", (el) => {
+  const mid = el.closest(".speed").dataset.mid, v = +el.value;
+  App.dragging = true;
+  clearTimeout(speedTimer);
+  speedTimer = setTimeout(() => { App.dragging = false; setSpeed(mid, v); }, 450);
+});
+el_on(document, "pointerdown", ".speed input[type=range]", () => (App.dragging = true));
+el_on(document, "click", ".speed button[data-sp]", (b) => {
+  const box = b.closest(".speed");
+  const m = machineById(box.dataset.mid);
+  if (m) setSpeed(box.dataset.mid, m.config.speed.step + +b.dataset.sp);
+});
+function refreshSpeed(root, m) {
+  const box = root?.querySelector(`.speed[data-mid="${CSS.escape(m.config.id)}"]`);
+  if (!box || box.contains(document.activeElement) && App.dragging) return;
+  const fresh = document.createElement("div");
+  fresh.innerHTML = speedHTML(m);
+  box.replaceWith(fresh.firstElementChild);
+}
+
 function renderStrip() {
   const el = $("#machine-strip");
   const ms = App.S.machines;
   const sig = JSON.stringify(ms.map((m) => [m.config.id, m.config.name, m.config.enabled, m.status.connected, m.status.ready, m.status.state,
-    m.status.paused, m.status.last_error, m.activity && [m.activity.kind, m.activity.job_id, m.activity.index], m.queued_count, m.config.jig.slots]));
-  if (sig !== App.lastStripSig) {
+    m.status.paused, m.status.last_error, m.activity && [m.activity.kind, m.activity.job_id, m.activity.index], m.queued_count, m.config.jig.slots,
+    m.config.speed, m.status.feed_override]));
+  if (sig !== App.lastStripSig && !App.dragging) {
     App.lastStripSig = sig;
     el.innerHTML = ms.map((m) => {
       const c = m.config, a = m.activity, st = m.status;
@@ -339,6 +401,7 @@ function renderStrip() {
         <div class="sub">${esc(c.firmware)} · ${esc(c.port)} · ${esc(c.dog.type)} dog · ${c.jig.slots} slot${c.jig.slots > 1 ? "s" : ""}</div>
         <div class="prog"></div>
         <div class="viz mini hidden" style="aspect-ratio: 16/4"></div>
+        ${c.firmware === "manual" ? "" : speedHTML(m)}
         ${st.last_error ? `<div class="err">⚠ ${esc(st.last_error)}</div>` : ""}
         <div class="row">
           ${busy && a.kind === "batch" && !a.manual ? `
@@ -453,8 +516,8 @@ async function jobModal(jid) {
     <div class="viz-wrap"><div class="viz" id="jm-viz"></div><div class="viz-info" id="jm-info"></div></div>
     <div class="small">Status: <b class="status-${j.status}">${j.status}</b>${j.error ? ` - <span class="err">${esc(j.error)}</span>` : ""}</div>
     <h3>Runs</h3>
-    ${j.run_history.length ? `<table class="small"><tr><th>When</th><th>Machine</th><th>Slot</th><th>Result</th><th>Strokes</th></tr>
-      ${j.run_history.map((r) => `<tr><td>${new Date(r.started * 1000).toLocaleTimeString()}</td><td>${esc(r.machine_id)}</td><td>${r.slot + 1}</td>
+    ${j.run_history.length ? `<table class="small"><tr><th>When</th><th>Machine</th><th>Slot</th><th>Speed</th><th>Result</th><th>Strokes</th></tr>
+      ${j.run_history.map((r) => `<tr><td>${new Date(r.started * 1000).toLocaleTimeString()}</td><td>${esc(r.machine_id)}</td><td>${r.slot + 1}</td><td>${r.speed_step > 0 ? "+" : ""}${r.speed_step ?? 0}</td>
       <td title="${esc(r.error || "")}">${esc(r.result || "running")}</td><td>${r.start_op}–${r.last_op + 1} / ${r.total_ops}</td></tr>`).join("")}</table>` : `<p class="muted small">Never run.</p>`}
     <div class="actions"><button data-x="close">Close</button></div>`);
   b.querySelector("[data-x=close]").onclick = closeModal;
@@ -497,6 +560,7 @@ function runModal(mid, jobIds, resume) {
         <label class="check"><input type="checkbox" class="ck"> Work zero is on the centre of the dog top and focus (Z) is set</label>
         <label class="check"><input type="checkbox" class="ck"> Area clear · eyewear on / enclosure closed</label>
       </div>
+      ${speedHTML(m)}
       <div class="row small"><button data-x="frame">Trace outline first (laser off)</button><span class="muted">Moves around slot 1's design so you can check it lands on the dog.</span></div>`}
     <div class="actions"><button data-x="cancel">Cancel</button><button class="primary" data-x="go" ${manual ? "" : "disabled"}>${manual ? "Start export" : `🔥 Burn ${ids.length} dog${ids.length > 1 ? "s" : ""}`}</button></div>`);
   const go = b.querySelector("[data-x=go]");
@@ -532,6 +596,7 @@ function buildMachineDetail(m) {
         <div id="md-err" class="err"></div>
         <div id="md-prog" style="margin:8px 0"></div>
         <div class="viz-wrap"><div class="viz" id="md-viz"></div><div class="viz-info" id="md-vinfo"></div></div>
+        ${manual ? "" : `<div id="md-speed" style="margin-top:10px">${speedHTML(m)}</div>`}
         <div class="actions">
           <select id="md-job" style="width:auto;max-width:260px"></select>
           <button id="md-show">Show</button>
@@ -602,16 +667,20 @@ function buildMachineDetail(m) {
       </div>
     </div>`}
   </div>`;
-  App.detailBuiltFor = c.id + ":" + JSON.stringify(c);
+  App.detailBuiltFor = detailSig(c);
   App.pointerOn = false;
   wireCamera(c);
 }
+
+// The dial changes config.speed often; don't rebuild the whole page (and kill the camera) for it.
+const detailSig = (c) => c.id + ":" + JSON.stringify({ ...c, speed: undefined });
 
 function renderMachineDetail() {
   renderMachineSeg();
   const m = machineById(App.machineSel);
   if (!m) { $("#machine-detail").innerHTML = `<p class="muted">No machines.</p>`; return; }
-  if (App.detailBuiltFor !== m.config.id + ":" + JSON.stringify(m.config)) buildMachineDetail(m);
+  if (App.detailBuiltFor !== detailSig(m.config)) buildMachineDetail(m);
+  else if (!App.dragging) refreshSpeed($("#md-speed"), m);
   const st = m.status, a = m.activity, c = m.config;
   $("#md-pill").innerHTML = statePill(m);
   $("#md-err").textContent = st.last_error ? "⚠ " + st.last_error : "";
@@ -763,6 +832,7 @@ const MSCHEMA = [
   ["Hotdog", [["dog.type", "select", "Dog type", () => Object.keys(App.meta.dog_presets)], ["dog.length", "number", "Length mm"],
     ["dog.diameter", "number", "Diameter mm"], ["dog.focus_tolerance", "number", "Depth of focus ± mm"], ["dog.end_margin", "number", "End margin mm"],
     ["dog.wrap", "bool", "Wrap design around curve"], ["dog.z_follow", "bool", "Z follows the curve"]]],
+  ["Speed dial", [["speed.step", "number", "Dial -10 (darker) … +10 (lighter)"], ["speed.step_pct", "number", "% speed change per step"]]],
   ["Jig / template", [["jig.slots", "number", "Slots"], ["jig.pitch_x", "number", "Slot pitch X mm"], ["jig.pitch_y", "number", "Slot pitch Y mm"],
     ["jig.template_power", "number", "Template power (0-1)"], ["jig.template_feed", "number", "Template feed"]]],
 ];
@@ -819,8 +889,9 @@ el_on("#machine-editor", "click", "button[data-s]", guard(async (b) => {
 
 async function renderHistory() {
   const runs = await api("/api/runs?limit=200");
-  $("#history").innerHTML = runs.length ? `<div class="table-scroll"><table><tr><th>Started</th><th>Job</th><th>Machine</th><th>Slot</th><th>Kind</th><th>Result</th><th>Strokes</th><th>Duration</th><th>Error</th></tr>
+  $("#history").innerHTML = runs.length ? `<div class="table-scroll"><table><tr><th>Started</th><th>Job</th><th>Machine</th><th>Slot</th><th>Kind</th><th>Speed</th><th>Result</th><th>Strokes</th><th>Duration</th><th>Error</th></tr>
     ${runs.map((r) => `<tr><td>${new Date(r.started * 1000).toLocaleString()}</td><td>${r.job_id ?? ""}</td><td>${esc(r.machine_id)}</td><td>${r.slot + 1}</td><td>${esc(r.kind)}</td>
+      <td>${r.speed_step > 0 ? "+" : ""}${r.speed_step ?? 0} <span class="muted">×${(r.speed_factor ?? 1).toFixed(2)}</span></td>
       <td class="status-${esc(r.result)}">${esc(r.result || "running")}</td><td>${r.start_op}–${r.last_op + 1}/${r.total_ops}</td>
       <td>${r.ended ? fmtTime(r.ended - r.started) : ""}</td><td class="err">${esc(r.error || "")}</td></tr>`).join("")}</table></div>` : `<p class="muted">No runs yet.</p>`;
 }

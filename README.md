@@ -40,6 +40,24 @@ extra `.ttf`/`.otf` fonts in `data/fonts/`.
    stroke, same machine, dog not moved), **Requeue**, and **Edit** (fix a typo;
    saving requeues it).
 
+## Speed dial (darkness)
+
+Every machine has a **Speed** dial from **−10** to **+10**, on its card, its
+Machines page and the pre-burn checklist. **0** is the design's base speed (the
+*Base speed* field in the composer); each step changes speed by 6% (set per
+machine under Settings → Speed dial), so −10 ≈ ×0.54 (slower = darker) and
++10 ≈ ×1.79 (faster = lighter).
+
+- The dial belongs to the machine and sticks until changed: tune it on the
+  first dog of the day, and every later job on that machine uses it.
+- It is baked into each job when it starts and recorded in History, so you can
+  see which setting made which dog. Exported G-code (manual machines) includes it.
+- Turn it during a burn and the change applies immediately: Grbl uses its
+  realtime feed override (10–200%), Marlin gets `M220` after the few moves
+  already buffered. The override resets when the job ends.
+- Speeds are still capped at the machine's *Max feed*; very high steps on fast
+  designs (e.g. image rasters) can hit that cap.
+
 ## Alignment tools (Machines & alignment tab)
 
 - **Placement template** — tape card or scrap wood to the bed, zero on it, and

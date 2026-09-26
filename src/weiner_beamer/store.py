@@ -40,6 +40,9 @@ MACHINE_DEFAULTS = {
             "end_margin": 3, "wrap": False, "z_follow": False},
     "jig": {"slots": 1, "pitch_x": 0, "pitch_y": 34, "template_power": 0.35, "template_feed": 1500},
     "align": {"angle": 0.0, "end_a": None, "end_b": None},
+    # Darkness dial: every design's speed is multiplied by (1 + step_pct/100) ** step.
+    # -10 = slowest/darkest, 0 = the design's own speed, +10 = fastest/lightest.
+    "speed": {"step": 0, "step_pct": 6},
     "notes": "",
 }
 
@@ -82,7 +85,8 @@ CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   job_id INTEGER, machine_id TEXT, slot INTEGER, kind TEXT,
   started REAL, ended REAL, result TEXT, error TEXT,
-  start_op INTEGER DEFAULT 0, last_op INTEGER DEFAULT -1, total_ops INTEGER DEFAULT 0
+  start_op INTEGER DEFAULT 0, last_op INTEGER DEFAULT -1, total_ops INTEGER DEFAULT 0,
+  speed_step INTEGER DEFAULT 0, speed_factor REAL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
@@ -101,7 +105,14 @@ class Store:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=NORMAL")
             self.db.executescript(SCHEMA)
+            self._migrate()
         self.recover()
+
+    def _migrate(self):
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(runs)")}
+        for name, decl in (("speed_step", "INTEGER DEFAULT 0"), ("speed_factor", "REAL DEFAULT 1")):
+            if name not in cols:
+                self.db.execute(f"ALTER TABLE runs ADD COLUMN {name} {decl}")
 
     def x(self, sql: str, args=()):
         with self.lock:
@@ -240,17 +251,21 @@ class Store:
                 self.update_job(other["id"], position=j["position"])
 
     # ---- runs --------------------------------------------------------------------
-    def start_run(self, job_id: int | None, machine_id: str, slot: int, kind: str, start_op: int, total_ops: int) -> int:
-        cur = self.x("INSERT INTO runs(job_id,machine_id,slot,kind,started,start_op,total_ops) VALUES(?,?,?,?,?,?,?)",
-                     (job_id, machine_id, slot, kind, time.time(), start_op, total_ops))
+    def start_run(self, job_id: int | None, machine_id: str, slot: int, kind: str, start_op: int, total_ops: int,
+                  speed_step: int = 0, speed_factor: float = 1.0) -> int:
+        cur = self.x("INSERT INTO runs(job_id,machine_id,slot,kind,started,start_op,total_ops,speed_step,speed_factor)"
+                     " VALUES(?,?,?,?,?,?,?,?,?)",
+                     (job_id, machine_id, slot, kind, time.time(), start_op, total_ops, speed_step, speed_factor))
         return cur.lastrowid
 
     def progress_run(self, run_id: int, last_op: int):
         self.x("UPDATE runs SET last_op=? WHERE id=?", (last_op, run_id))
 
-    def end_run(self, run_id: int, result: str, error: str | None, last_op: int):
+    def end_run(self, run_id: int, result: str, error: str | None, last_op: int, speed_step: int | None = None):
         self.x("UPDATE runs SET ended=?, result=?, error=?, last_op=? WHERE id=?",
                (time.time(), result, error, last_op, run_id))
+        if speed_step is not None:  # dial moved mid-burn: record where it ended up
+            self.x("UPDATE runs SET speed_step=? WHERE id=?", (speed_step, run_id))
 
     def runs(self, job_id: int | None = None, limit: int = 100) -> list[dict]:
         if job_id is None:

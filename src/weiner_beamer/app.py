@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import designs, geometry
 from .dialects import dialect_for
-from .fleet import Fleet, FleetError
+from .fleet import Fleet, FleetError, scale_speed, speed_factor
 from .store import DOG_PRESETS, FINISHED, MACHINE_DEFAULTS, Store
 
 STATIC = Path(__file__).parent / "static"
@@ -242,9 +242,10 @@ def create_app(data_dir: Path | None = None, password: str | None = None) -> Fas
         if not j:
             raise HTTPException(404)
         m = fleet.machine(machine)
-        ops = fleet.toolpath(j, machine)
+        ops = scale_speed(fleet.toolpath(j, machine), speed_factor(m))
         lines = dialect_for(m).job(ops, m, designs.slot_offset(m, slot), j["passes"])
         head = [f"; WeinerBeamer job #{jid} {j['title']!r} for {m['name']} ({m['firmware']}), slot {slot + 1}",
+                f"; speed dial {m['speed']['step']:+d} (x{speed_factor(m):.2f} of the design speed)",
                 "; zero X/Y on the centre of the dog's top, Z at focus height"]
         name = f"weinerbeamer-{jid}-{machine}.gcode"
         return PlainTextResponse("\n".join(head + [ln.text for ln in lines]) + "\n",
@@ -319,6 +320,8 @@ def create_app(data_dir: Path | None = None, password: str | None = None) -> Fas
             return fleet.mark_end(mid, str(body.get("end", "")))
         elif action == "center":
             return fleet.center_on_ends(mid)
+        elif action == "speed":
+            return fleet.set_speed(mid, body.get("step", 0))
         elif action == "angle":
             fleet.set_angle(mid, body.get("angle", 0))
         elif action == "console":
