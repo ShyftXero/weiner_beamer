@@ -853,8 +853,9 @@ function machineFormHTML(cfg, isNew) {
 
 function renderMachineEditor(openNew = false) {
   const ms = App.S?.machines || [];
-  const parts = ms.map((m) => `<details class="medit"><summary>${esc(m.config.name)} <span class="muted small">${esc(m.config.firmware)} · ${esc(m.config.port)}</span></summary>${machineFormHTML(m.config, false)}</details>`);
+  const parts = ms.map((m) => `<details class="medit"${m.config.id === (openNew ? null : App.machineSel) ? ' open' : ''}><summary>${esc(m.config.name)} <span class="muted small">${esc(m.config.firmware)} · ${esc(m.config.port)}</span></summary>${machineFormHTML(m.config, false)}</details>`);
   if (openNew) parts.unshift(`<details class="medit" open><summary>New machine</summary>${machineFormHTML({ ...App.meta.machine_defaults, name: "New machine" }, true)}</details>`);
+  parts.push(`<div class="row" style="margin-top:8px"><button id="scan-ports">Scan serial ports</button><span id="scan-result" class="muted small"></span></div>`);
   $("#machine-editor").innerHTML = parts.join("");
 }
 
@@ -885,6 +886,18 @@ el_on("#machine-editor", "click", "button[data-s]", guard(async (b) => {
   await poll();
   renderMachineEditor();
   fillRoutingSelects();
+}));
+
+el_on(document, "click", "#scan-ports", guard(async () => {
+  const res = await api("/api/serial-scan");
+  const sel = $("#machine-editor select[name='port']");
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = `<option value="">${cur || "(manual)"}</option>` +
+    res.map((p) => `<option value="${esc(p.path)}"${p.path === cur ? " selected" : ""}>${esc(p.path)} — ${esc(p.description)}</option>`).join("");
+  const result = $("#scan-result");
+  if (result) result.textContent = `${res.length} port(s) found`;
+  setTimeout(() => { if (result) result.textContent = ""; }, 4000);
 }));
 
 async function renderHistory() {

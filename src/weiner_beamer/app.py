@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from . import designs, geometry
 from .dialects import dialect_for
 from .fleet import Fleet, FleetError, scale_speed, speed_factor
+from .serialscan import scan as scan_serial
 from .store import DOG_PRESETS, FINISHED, MACHINE_DEFAULTS, Store
 
 STATIC = Path(__file__).parent / "static"
@@ -124,12 +125,16 @@ def create_app(data_dir: Path | None = None, password: str | None = None) -> Fas
         machines = [fleet.machine_view(m) for m in store.machines()]
         active = store.jobs(include_finished=False)
         done = [j for j in store.jobs(include_finished=True, limit=len(active) + finished) if j["status"] in FINISHED]
-        return {"machines": machines, "jobs": active + done[:finished]}
+        return {"machines": machines, "jobs": active + done[:finished], "serial_ports": scan_serial()}
 
     @app.get("/api/meta")
     def meta():
         return {"fonts": list(designs.available_fonts().keys()), "patterns": designs.PATTERNS,
                 "dog_presets": DOG_PRESETS, "machine_defaults": MACHINE_DEFAULTS, "kinds": KINDS}
+
+    @app.get("/api/serial-scan")
+    def serial_scan():
+        return {"ports": scan_serial()}
 
     # ---- jobs --------------------------------------------------------------
     @app.post("/api/preview")
