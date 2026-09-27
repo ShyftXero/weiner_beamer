@@ -59,6 +59,11 @@ def xyz(x: float, y: float, z: float | None) -> str:
     return out
 
 
+def _pt(pts: list, i: int) -> tuple:
+    p = pts[i]
+    return (p[0], p[1], p[2] if len(p) > 2 else None)
+
+
 def place(ops: list[g.Op], machine: dict, slot_xy: tuple[float, float] = (0.0, 0.0)) -> list[dict]:
     """Map dog-frame ops to work coordinates: cylinder wrap / Z-follow, then
     the operator's measured rotation, then the jig slot offset.
@@ -118,7 +123,7 @@ class Dialect:
                 if k < start_op or len(pts) < 2:
                     continue
                 e.cur_op = k
-                x, y, z = pts[0]
+                x, y, z = _pt(pts, 0)
                 e.add(f"G0 {xyz(x, y, z)}")
                 self.burn(e, pts, o["power"], o["feed"])
         e.cur_op = -1
@@ -175,9 +180,10 @@ class GrblDialect(Dialect):
 
     def burn(self, e, pts, power, feed):
         s = e.s(power)
-        x, y, z = pts[1]
+        x, y, z = _pt(pts, 1)
         e.add(f"G1 {xyz(x, y, z)} F{e.f(feed)} S{s}")
-        for x, y, z in pts[2:]:
+        for p in pts[2:]:
+            x, y, z = p[0], p[1], p[2] if len(p) > 2 else None
             e.add(f"G1 {xyz(x, y, z)}")
         # In laser mode the next G0 turns the beam off, so the line *before*
         # a G0 is not yet "safe"; mark safe on an explicit S0.
@@ -244,10 +250,11 @@ class MarlinDialect(Dialect):
     def burn(self, e, pts, power, feed):
         s = e.s(power)
         m = self.mode(e)
-        x, y, z = pts[1]
+        x, y, z = _pt(pts, 1)
         if m == "inline":
             e.add(f"G1 {xyz(x, y, z)} F{e.f(feed)} S{s}")
-            for x, y, z in pts[2:]:
+            for p in pts[2:]:
+                x, y, z = p[0], p[1], p[2] if len(p) > 2 else None
                 e.add(f"G1 {xyz(x, y, z)} S{s}")
             e.add("G1 S0", safe=True)
             return
@@ -255,7 +262,8 @@ class MarlinDialect(Dialect):
         e.add("M400")
         e.add(on)
         e.add(f"G1 {xyz(x, y, z)} F{e.f(feed)}")
-        for x, y, z in pts[2:]:
+        for p in pts[2:]:
+            x, y, z = p[0], p[1], p[2] if len(p) > 2 else None
             e.add(f"G1 {xyz(x, y, z)}")
         e.add("M400")
         e.add(self.off_cmd(e), safe=True)
